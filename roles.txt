@@ -1,0 +1,500 @@
+crew member
+crew trainer
+team member
+cashier
+line cook
+grill cook
+prep cook
+fry cook
+short order cook
+food prep
+dishwasher
+drive-thru
+drive thru
+server
+waitstaff
+waiter
+waitress
+host
+hostess
+busser
+barback
+barista
+food runner
+expeditor
+expediter
+kitchen helper
+kitchen assistant
+food service worker
+cafeteria worker
+concessions
+concession worker
+fast food
+restaurant team member
+catering assistant
+banquet server
+event server
+deli associate
+deli clerk
+bakery associate
+bakery clerk
+pizza maker
+sandwich maker
+bartender
+cocktail server
+sales associate
+retail associate
+store associate
+store clerk
+stock associate
+stocker
+overnight stocker
+stock clerk
+grocery clerk
+produce clerk
+meat clerk
+seafood clerk
+courtesy clerk
+bagger
+cart attendant
+sales floor associate
+fitting room attendant
+key holder
+loss prevention
+asset protection
+fuel attendant
+gas station attendant
+convenience store clerk
+inventory associate
+receiving associate
+merchandiser
+retail merchandiser
+reset merchandiser
+field merchandiser
+product demonstrator
+brand ambassador
+sampling associate
+warehouse associate
+warehouse worker
+warehouse operative
+picker
+packer
+picker packer
+order picker
+order selector
+material handler
+forklift
+forklift operator
+reach truck operator
+pallet jack operator
+loader
+unloader
+package handler
+sortation associate
+sorter
+stower
+fulfillment associate
+shipping associate
+shipping and receiving
+dock worker
+freight handler
+distribution associate
+production worker
+production associate
+production operator
+machine operator
+line operator
+assembler
+assembly worker
+manufacturing associate
+factory worker
+plant worker
+packaging associate
+packaging operator
+general labor
+general laborer
+sanitation worker
+quality inspector
+press operator
+palletizer operator
+mixer operator
+call center
+call center representative
+customer service representative
+customer service agent
+customer support representative
+contact center
+inbound representative
+outbound representative
+collections representative
+telemarketer
+telesales representative
+dispatcher
+reservations agent
+claims representative
+patient access representative
+scheduling coordinator
+member services
+caregiver
+care aide
+care assistant
+certified nursing assistant
+cna
+nursing assistant
+home health aide
+hha
+home care aide
+personal care assistant
+personal care aide
+pca
+direct support professional
+dsp
+direct care worker
+resident assistant
+resident aide
+patient care technician
+pct
+patient care assistant
+medical assistant
+phlebotomist
+sterile processing technician
+dietary aide
+dietary assistant
+nutrition aide
+environmental services
+patient transporter
+transporter
+unit secretary
+behavioral health technician
+behavior technician
+rbt
+activities assistant
+companion caregiver
+hospice aide
+cleaner
+janitor
+custodian
+housekeeper
+housekeeping
+housekeeping aide
+room attendant
+laundry attendant
+porter
+day porter
+night cleaner
+commercial cleaner
+restroom attendant
+building attendant
+maintenance technician
+maintenance worker
+general maintenance
+facilities technician
+groundskeeper
+grounds maintenance
+landscaper
+lawn care technician
+security guard
+security officer
+unarmed security
+security ambassador
+loss prevention officer
+gate guard
+screener
+delivery driver
+delivery associate
+driver helper
+courier
+route driver
+route sales representative
+non-cdl driver
+cdl driver
+truck driver
+box truck driver
+shuttle driver
+van driver
+bus driver
+mover
+valet
+valet attendant
+transport driver
+front desk
+front desk agent
+front desk associate
+guest service agent
+guest service representative
+night auditor
+bellhop
+bell attendant
+concierge
+houseman
+breakfast attendant
+pool attendant
+spa attendant
+banquet setup
+event staff
+lifeguard
+ramp agent
+baggage handler
+gate agent
+passenger service agent
+ground crew
+ground service agent
+aircraft cleaner
+cabin cleaner
+wheelchair agent
+wheelchair attendant
+fueler
+aircraft fueler
+station agent
+skycap
+childcare
+child care
+daycare
+teacher assistant
+teacher aide
+teachers aide
+teaching assistant
+paraprofessional
+paraeducator
+classroom aide
+after school
+camp counselor
+camp staff
+recreation aide
+nanny
+preschool teacher
+early childhood assistant
+lunch aide
+bus monitor
+playground attendant
+membership advisor
+fitness attendant
+recreation attendant
+ride operator
+attraction attendant
+ticket taker
+usher
+box office
+crowd management
+parking attendant
+guest ambassador
+park services
+games attendant
+cast member
+car wash attendant
+detailer
+auto detailer
+lube technician
+tire technician
+tire installer
+oil change technician
+quick lube technician
+parts associate
+service advisor
+lot attendant
+construction laborer
+construction helper
+day laborer
+laborer
+flagger
+traffic control
+mason tender
+demolition laborer
+irrigation technician
+food production worker
+food processing worker
+meat processor
+poultry processor
+processing associate
+grader
+farm worker
+harvester
+produce packer
+kennel attendant
+kennel assistant
+pet care attendant
+animal care technician
+veterinary assistant
+pet groomer
+dog daycare attendant
+bather
+shift lead
+shift leader
+shift supervisor
+shift manager
+assistant manager
+team lead
+team leader
+crew lead
+crew leader
+lead associate
+floor supervisor
+light industrial associate
+temporary associate
+warehouse temp
+car wash
+carwash
+wash attendant
+vehicle service attendant
+automotive technician
+auto technician
+service technician
+mechanic
+auto mechanic
+quick lube
+express service technician
+vehicle detailer
+reconditioning technician
+recon technician
+service writer
+lot porter
+service porter
+vehicle porter
+rental agent
+automotive service
+clean-up
+clean up
+cleanup
+clean up crew
+clean-up crew
+night clean-up
+night crew
+overnight associate
+overnight team member
+closing crew
+opening crew
+overnight
+night shift
+third shift
+graveyard
+cook
+bartend
+wait
+busboy
+expedit
+cater
+concession
+deli
+baker
+dishwash
+grill
+stock
+merchandis
+clerk
+sales floor
+fuel
+front end
+warehous
+pallet
+pick
+pack
+sort
+load
+unload
+freight
+dock
+reach truck
+production
+assembl
+operator
+packag
+sanitation
+process
+factory
+fabricat
+customer service
+customer support
+collect
+telemarket
+telesales
+dispatch
+reservation
+recept
+serv
+caregiv
+home health
+home care
+personal care
+direct care
+direct support
+patient care
+patient access
+patient transport
+phleboto
+dietary
+nutrition
+behavior
+hospice
+resident
+orderly
+transport
+sterile process
+companion
+clean
+custodi
+housekeep
+laundr
+restroom
+maintenance
+groundskeep
+grounds
+landscap
+facilities
+security
+guard
+screen
+surveillance
+deliver
+driver
+route
+shuttle
+guest service
+night audit
+banquet
+ramp
+baggage
+ground service
+aircraft clean
+cabin clean
+wheelchair
+passenger service
+paraprofess
+paraeduc
+recreation a
+preschool
+playground
+membership
+attraction
+attendant
+crew
+vehicle service
+automotive
+lube
+tire
+oil change
+detail
+recon
+construction labor
+day labor
+demolition
+food production
+food processing
+meat
+poultry
+butcher
+farm
+harvest
+produce
+kennel
+pet care
+animal care
+groom
+dog daycare
+assistant store manager
+assistant general manager
+assistant restaurant manager
+teller
+bank teller
+sales advisor
+tire advisor
+lube advisor

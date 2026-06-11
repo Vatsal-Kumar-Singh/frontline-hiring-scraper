@@ -1,0 +1,9 @@
+requests>=2.31
+
+# Web UI (simple browser front-end: python app.py)
+flask>=3.0
+
+# Headless tier (free fallback for JS-only careers pages). Recommended.
+#   pip install playwright
+#   python -m playwright install chromium
+playwright>=1.40

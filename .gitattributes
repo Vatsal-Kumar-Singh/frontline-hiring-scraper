@@ -1,0 +1,12 @@
+# Keep shell launchers LF so they run on macOS/Linux even when committed from
+# Windows (Git can otherwise convert them to CRLF and break the bash shebang).
+*.sh        text eol=lf
+*.command   text eol=lf
+# Windows batch must stay CRLF.
+*.bat       text eol=crlf
+# Normalize the rest.
+*.py        text
+*.md        text
+*.txt       text
+*.json      text
+*.csv       text
