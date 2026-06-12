@@ -27,12 +27,15 @@ COST_DEDICATED = 0.002    # adp / icims / paradox dedicated actors
 COST_CATCHALL = 0.012     # career-site catch-all aggregator
 COST_INDEED = 0.00008     # kaix/indeed-scraper — ~150x cheaper than catch-all
 COST_LINKEDIN = 0.0009    # worldunboxer/rapid-linkedin-scraper (Indeed-miss escalation)
+COST_GOOGLE = 0.02        # igview google-jobs-scraper — pricey; targeted use only
 COST_PER_JOB = COST_DEDICATED  # back-compat default
 DEFAULT_CAP = 65.0       # monthly backstop (override via APIFY_MONTHLY_CAP_USD)
 DEFAULT_RUN_CAP = 15.0   # HARD STOP per single run (override via APIFY_RUN_CAP_USD)
 
 # Set at the start of a run so the per-run cap measures only THIS run's spend.
-_run_baseline: float | None = None
+# This run's spend, tracked IN MEMORY so the per-run cap can't be defeated by the
+# ledger file being reset/edited mid-run (observed in practice).
+_run_spent: float = 0.0
 
 _DIR = Path(__file__).resolve().parent
 _LEDGER = _DIR / "apify_spend.json"
@@ -63,9 +66,9 @@ def run_cap() -> float:
 def begin_run() -> None:
     """Mark the start of a run. Reconciles the ledger to real Apify usage, then
     pins a baseline so the per-run cap counts only spend made AFTER this point."""
-    global _run_baseline
+    global _run_spent
     sync_from_apify()
-    _run_baseline = spent()
+    _run_spent = 0.0
 
 
 def _read() -> dict:
@@ -90,8 +93,7 @@ def remaining() -> float:
     """Spend headroom = the TIGHTER of the monthly backstop and the per-run cap.
     All guards use this, so a run can never exceed $15 (or the monthly ceiling)."""
     monthly = max(0.0, cap() - spent())
-    base = _run_baseline if _run_baseline is not None else spent()
-    per_run = max(0.0, run_cap() - (spent() - base))
+    per_run = max(0.0, run_cap() - _run_spent)  # in-memory; reset-proof
     return round(min(monthly, per_run), 4)
 
 
@@ -133,9 +135,13 @@ def sync_from_apify() -> float | None:
 
 
 def record_jobs(n_jobs: int, cost_per_job: float = COST_PER_JOB) -> float:
-    """Add n_jobs * cost_per_job to this month's ledger; return new total.
-    Pass COST_CATCHALL for the catch-all actor, COST_DEDICATED for the rest."""
+    """Add n_jobs * cost_per_job to this month's ledger AND the in-memory per-run
+    counter; return the new monthly total. Pass COST_CATCHALL for the catch-all
+    actor, COST_DEDICATED for the rest."""
+    global _run_spent
+    amount = max(0, n_jobs) * float(cost_per_job)
+    _run_spent += amount
     d = _read()
-    d["spent_usd"] = round(d["spent_usd"] + max(0, n_jobs) * float(cost_per_job), 4)
+    d["spent_usd"] = round(d["spent_usd"] + amount, 4)
     _write(d)
     return d["spent_usd"]

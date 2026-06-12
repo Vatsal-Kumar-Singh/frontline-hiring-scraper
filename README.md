@@ -39,11 +39,12 @@ Desktop icon. Your browser opens at **http://127.0.0.1:5050**.
 5. *(Optional)* Upload your own **ICP job-roles list** (a `.txt`, one role per line).
 6. Paste your **Apify API token** once (free at [apify.com](https://apify.com) →
    Settings → Integrations) — only needed for the paid tiers. Saved locally, never uploaded.
-7. Set your **spend limits** — *max per run* and *max per month* (default **$15** / **$65**).
+7. Set your **spend cap** (default **$15 per run**).
 8. Click **Run**, watch the live progress + log, then **Download** the results CSV.
 
-**You can never overspend:** a run stops the instant it would cross the smaller of
-your two limits, and the page shows your spend live.
+**You can never overspend:** every run **stops the instant it would exceed your
+$15 cap** — if a run needs more, you raise the number yourself first (nothing
+spends past your cap without you deciding). The page shows your spend live.
 
 > **Something not working (especially on a Mac)?** See
 > **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** — it lists every common issue
@@ -55,14 +56,16 @@ your two limits, and the page shows your spend live.
 ### The lookup tiers (cheapest first — leave the defaults)
 | Tier | Cost | What it does |
 |---|---|---|
-| Static read + headless | **free** | Reads each company's own careers page / ATS |
-| **Indeed sweep** | ~$0.0001/job | Finds companies by name on Indeed — highest yield |
+| Static + sitemap + headless | **free** | Reads each company's own careers page / ATS (incl. careers pages found via `sitemap.xml`) |
+| **Indeed sweep** | ~$0.0001/job | Finds companies by name (+ LinkedIn vanity name) — highest yield |
 | **ATS slug harvest** | pennies | Reads a company's real ATS for free (via Indeed) + caches it |
 | **LinkedIn sweep** | ~$0.0009/job | Recovers companies Indeed couldn't find |
+| **Google Jobs** | ~$0.02/job | Broadest coverage; **targeted at larger companies only** (employer-filtered) |
 | Apify ATS actors | most expensive | Only for locked platforms (Paycom/Dayforce/ADP/iCIMS) |
 
 Tiers run cheapest-first, each shrinking the work for the next. A typical
-500-company run resolves ~70–85% for **a few dollars**.
+500-company run resolves ~70–85% for **a few dollars**. (Lists of tiny local
+businesses resolve lower — they're often not on any job board — see notes below.)
 
 ## Run from the command line (optional, for developers)
 ```
@@ -163,10 +166,12 @@ Every company stops at the first tier that resolves it, so paid tiers only ever
 see what the free/cheap tiers couldn't crack:
 1. **Seed + slug cache** ([`seeds.json`](seeds.json), `cache/slugs.json`) — curated
    and prior verified resolutions, re-verified but reused. **Free.**
-2. **Static fetch + signatures** — homepage + careers paths, follow redirects /
-   discovered careers links, scan HTML for ATS signatures. **Free.**
-3. **Indeed sweep** (`--indeed`) — finds companies by name on Indeed
-   (~$0.0001/job). Highest yield; resolves the bulk.
+2. **Static fetch + signatures** — homepage + careers paths **+ careers pages
+   discovered from `sitemap.xml`** (catches non-standard paths like `/employment`),
+   follow redirects, scan HTML for ATS signatures. **Free.**
+3. **Indeed sweep** (`--indeed`) — finds companies by name (and by the **LinkedIn
+   vanity name** from the Apollo `Company LinkedIn URL`) on Indeed (~$0.0001/job).
+   Highest yield; resolves the bulk.
 4. **Slug harvest** (`--harvest`) — reads a company's real ATS for **free** using
    the apply URL Indeed exposes, and caches the slug so future runs skip the paid
    step entirely. Tagged `count_method=<platform>+indeed`.
@@ -175,11 +180,14 @@ see what the free/cheap tiers couldn't crack:
    Disable with `--no-headless`.
 6. **LinkedIn sweep** (`--linkedin`) — recovers companies Indeed missed
    (~$0.0009/job).
-7. **Apify ATS actors** (`--apify`) — dedicated (ADP/iCIMS/Paradox) + catch-all
+7. **Google Jobs** (`--google`) — broadest coverage (a company's own JobPosting
+   schema, niche boards). Pricey (~$0.02/job) and imprecise, so it's **employer-
+   filtered and runs only on larger companies** (≥100 employees) under a $6 tier cap.
+8. **Apify ATS actors** (`--apify`) — dedicated (ADP/iCIMS/Paradox) + catch-all
    (Paycom/Dayforce/…). Most expensive; last resort, opt-in.
 
 Free + cheap tiers resolve the bulk; every discovery is cached/seedable so the
-unresolved set shrinks permanently. Spend is hard-capped per run and per month
+unresolved set shrinks permanently. Spend is hard-capped per run ($15 default)
 (see the budget guard in [`budget.py`](budget.py)).
 
 **Detect-only — resolved + slug recorded, but counts need headless/Apify** (never a false zero):
@@ -233,8 +241,12 @@ confidence when tiering:
 |---|---|---|
 | `http` | read directly from the ATS public API (incl. seed/static/headless-discovered) | highest |
 | `headless` | ATS found by rendering a JS-only careers page, then read via its API | high |
+| `<platform>+indeed` | ATS slug discovered from an Indeed apply URL, then read for free | high |
 | `apify-full:<platform>` | dedicated actor, full board | high |
+| `indeed` | company-name search on Indeed (7-day window) | high |
+| `linkedin` | company-name search on LinkedIn (Indeed-miss escalation) | medium-high |
 | `apify-aggregator` | catch-all aggregator | medium (may undercount) |
+| `google` | Google Jobs, employer-filtered (larger companies only) | medium |
 | `generic` | job links scraped from a custom (non-ATS) rendered careers page | medium (links+JSON-LD only; no false zeros) |
 | *(empty)* | unresolved — count is empty, never 0 | — |
 

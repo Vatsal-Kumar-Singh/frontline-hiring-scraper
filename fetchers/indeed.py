@@ -59,6 +59,26 @@ def search_name(name: str) -> str:
     return s or (name or "").strip()
 
 
+_LI_SLUG = re.compile(r"/company/([^/?#]+)", re.I)
+
+
+def vanity_from_row(row) -> str | None:
+    """LinkedIn's canonical company name, derived from the row's LinkedIn URL
+    (linkedin.com/company/<vanity>). Often matches a job board where the messy
+    Apollo legal name doesn't. Returns None if no usable URL."""
+    if not row:
+        return None
+    li = (row.get("Company Linkedin Url") or row.get("Company LinkedIn Url")
+          or row.get("Company Linkedin URL") or "").strip()
+    m = _LI_SLUG.search(li)
+    if not m:
+        return None
+    slug = m.group(1).replace("-", " ").replace("_", " ").strip()
+    # drop a trailing numeric LinkedIn id chunk if present
+    slug = re.sub(r"\s+\d{4,}$", "", slug)
+    return slug or None
+
+
 def company_matches(target: str, found: str) -> bool:
     """True if `found` (Indeed's employer name) plausibly IS `target`. Token-based
     so 'Splash Car Wash' matches 'Splash Car Wash, Detail & Oil' but not an
@@ -128,23 +148,23 @@ def discover_ats(name: str, since: str = "7", probe: int = 10):
     return None
 
 
-def fetch_company(name: str, since: str = "7", max_items: int = MAX_ITEMS):
+def fetch_company(name: str, since: str = "7", max_items: int = MAX_ITEMS, row=None):
     """Return (jobs, raw_count, found_names) for `name` on Indeed.
       jobs       = [{title, location, date_posted, company}] whose employer matches
       raw_count  = total jobs Indeed returned BEFORE the name-match filter
       found_names= distinct employer names Indeed returned (for diagnosing misses)
-    raw_count==0  -> Indeed has nothing for that name (board/name doesn't exist)
-    raw_count>0 & jobs==[] -> only look-alike employers (name likely wrong)
+    Searches the raw name, the suffix-cleaned name, AND the LinkedIn vanity name
+    (from `row`, when present), and matches employers against any of them.
     Raises on actor error (caller treats as unresolved — never a false zero)."""
-    # Query BOTH the raw name and the suffix-cleaned name (when they differ) and
-    # MERGE — cleaning usually helps but can occasionally break a match, so trying
-    # both can only gain companies, never lose them.
-    queries = [name.strip()]
+    terms = [name.strip()]
     cleaned = search_name(name)
     if cleaned and cleaned.lower() != name.strip().lower():
-        queries.append(cleaned)
+        terms.append(cleaned)
+    vanity = vanity_from_row(row)
+    if vanity and vanity.lower() not in {t.lower() for t in terms}:
+        terms.append(vanity)
     items, seen = [], set()
-    for q in queries:
+    for q in terms:
         raw = apify_base.run_actor(
             ACTOR,
             {"keyword": f'company:"{q}"', "maxItems": int(max_items),
@@ -157,12 +177,13 @@ def fetch_company(name: str, since: str = "7", max_items: int = MAX_ITEMS):
             if jid not in seen:
                 seen.add(jid)
                 items.append(it)
+    match_terms = [name] + ([vanity] if vanity else [])
     out, found_names = [], set()
     for it in items:
         found = _company_name(it)
         if found:
             found_names.add(found)
-        if found and not company_matches(name, found):
+        if found and not any(company_matches(t, found) for t in match_terms):
             continue  # look-alike employer — drop
         out.append({
             "title": _title_text(it),

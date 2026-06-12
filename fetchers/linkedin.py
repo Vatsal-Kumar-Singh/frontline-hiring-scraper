@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import budget
 from . import apify_base
-from .indeed import company_matches, search_name  # shared name helpers
+from .indeed import company_matches, search_name  # shared helpers
 
 ACTOR = "worldunboxer/rapid-linkedin-scraper"
 MAX_ITEMS = 50
@@ -35,17 +35,18 @@ def _norm(it: dict) -> dict:
     }
 
 
-def fetch_company(name: str, since: str = "7", max_items: int = MAX_ITEMS):
+def fetch_company(name: str, since: str = "7", max_items: int = MAX_ITEMS, row=None):
     """Return (jobs, raw_count, found_names) — same contract as indeed.fetch_company.
-    jobs are name-matched + normalized {title, location, date_posted, company}."""
-    # Query BOTH raw and cleaned name (when different) and MERGE — never lose a
-    # company to an over-aggressive name clean.
-    queries = [name.strip()]
+    Searches the raw name and the suffix-cleaned name. (We deliberately do NOT add
+    the LinkedIn vanity name here: at $0.0009/job it generated mostly mismatched,
+    paid-for noise on generic hospitality names. The vanity alias lives on the
+    near-free Indeed tier instead.)"""
+    terms = [name.strip()]
     cleaned = search_name(name)
     if cleaned and cleaned.lower() != name.strip().lower():
-        queries.append(cleaned)
+        terms.append(cleaned)
     items, seen = [], set()
-    for q in queries:
+    for q in terms:
         raw = apify_base.run_actor(
             ACTOR,
             {"company_names": [q], "jobs_entries": int(max_items),

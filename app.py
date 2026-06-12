@@ -298,8 +298,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </style></head><body>
 <h1>Frontline Hiring Scraper</h1>
 <p class="sub">Upload your Apollo company list → get, per company, how many open frontline / hourly roles they have.</p>
-<p class="bud">💰 This month: <b>${{ '%.2f'|format(budget.spent) }}</b> spent &nbsp;·&nbsp;
-   hard cap <b>${{ '%g'|format(budget.run_cap) }}/run</b>, ${{ '%g'|format(budget.monthly_cap) }}/month — a run can never exceed this.</p>
+<p class="bud">💰 Spend cap: <b>${{ '%g'|format(budget.run_cap) }} per run</b> — a run <b>stops</b>
+   the moment it would exceed this; nothing is spent beyond your cap without you raising it first.</p>
 
 <form id="form">
  <div class="row">
@@ -337,20 +337,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    Saved locally in <code>secrets.local.json</code> (never uploaded, git-ignored).</div>
  </div>
 
- <div class="row">
-  <label>6. Spending limits (USD)</label>
-  <div style="display:flex;gap:14px;flex-wrap:wrap">
-   <div style="flex:1;min-width:180px">
-    <div class="hint" style="margin:0 0 3px">Max per run</div>
-    <input type="number" name="run_cap" value="{{ '%g'|format(budget.run_cap) }}" min="0" step="1">
-   </div>
-   <div style="flex:1;min-width:180px">
-    <div class="hint" style="margin:0 0 3px">Max per month</div>
-    <input type="number" name="monthly_cap" value="{{ '%g'|format(budget.monthly_cap) }}" min="0" step="1">
-   </div>
-  </div>
-  <div class="hint">A run stops the moment it would exceed the smaller of these — it can
-   <b>never</b> overspend. Defaults: $15/run, $65/month.</div>
+ <div class="row" style="background:#eef7ee;border-color:#bfe0bf">
+  <label>6. Spend cap (USD per run)</label>
+  <input type="number" name="run_cap" value="{{ '%g'|format(budget.run_cap) }}" min="0" step="1" style="max-width:200px">
+  <div class="hint"><b>Default $15.</b> A run <b>stops the moment</b> it would exceed this —
+   it can never overspend. If a run needs more, <b>raise this number first</b> (that's
+   your decision to spend more). The free tiers (static/headless) always run regardless.</div>
  </div>
 
  <div class="row">

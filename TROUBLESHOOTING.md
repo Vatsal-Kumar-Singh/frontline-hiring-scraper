@@ -5,6 +5,19 @@ error to an AI coding assistant (Claude Code, Codex, Cursor, …) — or just pa
 error into ChatGPT/Claude. Each problem below lists the exact **symptom**, the
 **cause**, and the **fix** so it can be resolved in one step.
 
+> ⚠️ **macOS note for the maintainer / the next AI:** this project was **developed
+> and tested on Windows.** The cross-platform code paths were written and reasoned
+> through carefully (process-kill is branched `os.name=="nt"` → `taskkill` else
+> `os.killpg`; the headless worker uses `start_new_session` on POSIX; line endings
+> forced to LF via `.gitattributes`; the server runs on port **5050** to dodge the
+> macOS-AirPlay-on-5000 clash), **but they have NOT been executed on a real Mac.**
+> So if something misbehaves on macOS, it's most likely one of the environment
+> items below. The known *unverified-on-Mac* risk areas, for an AI to check first:
+> **(a)** SSL root certs (python.org Python — issue #1), **(b)** Gatekeeper /
+> lost exec bit on the launcher (#2, #3), **(c)** the `/usr/bin/python3` Xcode stub
+> (#4), **(d)** Playwright Chromium download on Apple Silicon (#7). Pure-Python
+> logic (the scraper tiers, budget guard, matching) is OS-agnostic and safe.
+
 > Tip for the AI assistant reading this: the app is a Flask web UI (`app.py`) that
 > shells out to `pipeline.py`. It is pure Python + Playwright, no native build
 > step. Launchers: `run.bat` (Windows), `run.command` (macOS double-click),
@@ -111,18 +124,31 @@ connections?"
 **Fix:** click **Allow**. The server is local-only (`127.0.0.1`); nothing is
 exposed to the internet.
 
-### 9. Paid tiers do nothing / "Paid tiers need an Apify API token"
-**Symptom:** Indeed/LinkedIn/Apify return nothing, or the page warns about a token.
-**Cause:** no Apify token saved, or the monthly/run cap is already reached.
-**Fix:** paste a token (free at apify.com → Settings → Integrations) into the page,
-and check the spend limits. The token is stored in `secrets.local.json`. To reset
-the monthly spend counter, delete `apify_spend.json` (it rebuilds itself).
+### 9. Paid tiers do nothing, or a run stops early
+**Symptom:** Indeed/LinkedIn/Google/Apify return nothing; or a run halts with
+"stopped early — budget cap reached".
+**Cause:** no Apify token saved, **or the run hit the $15 spend cap** (by design).
+**Fix:** paste a token (free at apify.com → Settings → Integrations). If it stopped
+on the cap and you want it to go further, **raise the "Spend cap per run" field**
+on the page — nothing spends past your cap without you raising it first. The token
+and cap live in `secrets.local.json` (`APIFY_RUN_CAP_USD`).
+**Note on the ledger:** the per-run cap is tracked **in memory**, so it holds even
+if `apify_spend.json` is reset/edited. The authoritative spend figure is your real
+Apify usage (`GET https://api.apify.com/v2/users/me/limits`), not that local file.
+
+### 10. Google Jobs tier seems expensive / returns odd companies
+**Symptom:** the Google Jobs tier costs more than the others, or its results
+include other employers.
+**Cause:** Google Jobs is ~$0.02/job (vs ~$0.0001 for Indeed) and matches loosely.
+**By design** it's employer-filtered and only runs on larger companies (≥100
+employees) under a $6 tier cap — so it stays cheap. This is expected; nothing to fix.
 
 ---
 
 ## Works on every OS
-- A run **can never overspend** — it stops at the smaller of your per-run / monthly
-  caps (default $15 / $65), shown live on the page.
+- A run **can never overspend** — it stops the instant it would exceed your
+  **$15-per-run cap** (default), shown live on the page. Raise the cap yourself if a
+  run needs more.
 - Output for each run is saved under `outputs/` and downloadable from the page.
 - Your uploaded role list replaces the shortlist only if you tick the box; the old
   one is archived in `roles_archive/`, never deleted.

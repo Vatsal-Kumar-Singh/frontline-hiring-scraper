@@ -30,3 +30,7 @@ apollo_results*.csv
 unresolved_companies*.csv
 # auto-generated slug cache (real-run data — rebuilds itself)
 cache/
+
+# stray temp files from atomic writes / headless workers
+tmp*.json
+*.tmp

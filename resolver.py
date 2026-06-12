@@ -332,13 +332,45 @@ def _fetch(url: str, timeout: int = 4):
 
 
 # -------------------------------------------------------------- resolve --------
+def _sitemap_careers_urls(host: str, get_page, limit: int = 6) -> list[str]:
+    """Discover careers/jobs pages from the site's sitemap.xml — catches the
+    non-standard paths a fixed candidate list misses (common on small/custom
+    hospitality sites). Bounded to a few sitemap fetches; never raises."""
+    found: list[str] = []
+    seen: set[str] = set()
+    sitemaps = [f"https://{host}/sitemap.xml", f"https://{host}/sitemap_index.xml"]
+    child_budget = 2  # follow at most 2 nested sitemaps
+    while sitemaps and len(found) < limit:
+        sm = sitemaps.pop(0)
+        if sm in seen:
+            continue
+        seen.add(sm)
+        page = get_page(sm)
+        if not page:
+            continue
+        for u in re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", page[0][:TEXT_CAP], re.I):
+            if u.lower().endswith(".xml") and child_budget > 0 and u not in seen:
+                sitemaps.append(u)
+                child_budget -= 1
+            elif _CAREERS_LINK.search(u):
+                h = (urlparse(u).hostname or "").lower()
+                h = h[4:] if h.startswith("www.") else h
+                if host in h and u not in found:
+                    found.append(u)
+                    if len(found) >= limit:
+                        break
+    return found
+
+
 def _scan_pages(host: str, get_page):
     """Walk candidate + discovered careers URLs via get_page(url) -> (text,
     final_url) | None. Returns (all_candidates, any_page)."""
     all_candidates: list[tuple[str, str, str]] = []
     seen_cand = set()
     any_page = False
-    queue = candidate_urls(host)
+    cand = candidate_urls(host)
+    # homepage first, then sitemap-confirmed careers pages, then guessed paths
+    queue = cand[:1] + _sitemap_careers_urls(host, get_page) + cand[1:]
     visited: set[str] = set()
     fetches = 0
     while queue and fetches < MAX_FETCH:

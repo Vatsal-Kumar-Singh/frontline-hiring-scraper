@@ -83,7 +83,7 @@ def _date_ok(date_posted, cutoff):
         return True
 
 import fetchers
-from fetchers import apify_actor, apify_base, indeed, linkedin
+from fetchers import apify_actor, apify_base, google_jobs, indeed, linkedin
 from matcher import filter_roles
 from resolver import load_cache, resolve, resolve_headless_batch, save_cache
 
@@ -195,14 +195,20 @@ def run(input_path, output_path, limit=None, since="7", headless_enabled=True,
     # Resume: reuse already-resolved rows from a prior (interrupted) run writing the
     # SAME output file, so repeated launches accumulate progress across crashes /
     # machine sleeps. Match by website value.
+    # Key by (company, website) — website alone collapses/loses blank-website rows
+    # (companies resolved by name-search), which a re-run would then reprocess.
+    def _rkey(r):
+        nm = (r.get(cols["name"], "") if cols["name"] else "").strip().lower()
+        st = (r.get(cols["website"], "") if cols["website"] else "").strip().lower()
+        return (nm, st)
+
     resume = {}
     if os.path.exists(output_path):
         try:
             with open(output_path, newline="", encoding="utf-8-sig") as f:
                 for r in csv.DictReader(f):
-                    site = r.get(cols["website"], "") if cols["website"] else ""
-                    if site and r.get("status") == "ok":
-                        resume[site] = {k: r.get(k, "") for k in OUT_COLS}
+                    if r.get("status") == "ok":
+                        resume[_rkey(r)] = {k: r.get(k, "") for k in OUT_COLS}
         except (OSError, ValueError):
             resume = {}
     if resume:
@@ -224,9 +230,9 @@ def run(input_path, output_path, limit=None, since="7", headless_enabled=True,
     # Pre-fill resumed rows so EVERY checkpoint includes them (a later death can't
     # regress previously-resolved rows that this run hasn't re-reached yet).
     for idx, row in enumerate(rows):
-        site = row.get(cols["website"], "") if cols["website"] else ""
-        if site and site in resume:
-            results[idx] = dict(resume[site])
+        key = _rkey(row)
+        if key in resume:
+            results[idx] = dict(resume[key])
     done = {"n": 0}
     lock = threading.Lock()
 
@@ -340,7 +346,7 @@ def _scraper_fill(rows, results, cols, log, since, *, fetch_fn, method,
                 st["stop"] = True
                 return
         try:
-            jobs, raw, found_names = fetch_fn(name, since)
+            jobs, raw, found_names = fetch_fn(name, since, row=rows[idx])
         except Exception as e:
             with blk:
                 st["done"] += 1
@@ -516,6 +522,93 @@ def run_harvest_only(input_path, output_path, since="7"):
     print(f"\nDone (harvest). ok={ok} | strong(20+)={strong}  ->  {output_path}")
     _emit(type="done", counts={"ok": ok}, strong=strong, total=len(rows),
           output=output_path)
+
+
+GOOGLE_MIN_EMP = 100   # only worth $0.02/job on larger companies
+GOOGLE_TIER_CAP = 6.0  # hard ceiling for this (pricey) tier, on top of the run cap
+
+
+def _google_fill(rows, results, cols, log, since="7", checkpoint=None):
+    """#2 Google Jobs (PAID, ~$0.02/job) — targeted at the LARGER still-unresolved
+    companies only (>= GOOGLE_MIN_EMP employees), employer-filtered. Bounded by its
+    own tier cap AND the per-run/monthly budget. Never a false zero."""
+    if not apify_base.enabled():
+        log("GOOGLE      skipped — no Apify token")
+        return
+    synced = budget.sync_from_apify()
+    if synced is not None:
+        log(f"GOOGLE      ledger reconciled to real Apify usage: ${synced:.2f}")
+    emp_col = next((c for c in (rows[0].keys() if rows else []) if "employee" in c.lower()), None)
+
+    def emp(idx):
+        try:
+            return int((rows[idx].get(emp_col, "") or "0").replace(",", ""))
+        except (ValueError, TypeError):
+            return 0
+
+    targets = []
+    for idx, res in enumerate(results):
+        if res.get("status") == "ok":
+            continue
+        name = (rows[idx].get(cols["name"], "") if cols["name"] else "").strip()
+        if name and (not emp_col or emp(idx) >= GOOGLE_MIN_EMP):
+            targets.append((idx, name))
+    n = len(targets)
+    tier_start = budget.spent()
+    worst = 12 * budget.COST_GOOGLE  # ~one page of results
+    _emit(type="phase", phase="Google Jobs lookup",
+          detail="targeted high-value pass", current=0, total=n)
+    log(f"GOOGLE      targeted pass on {n} larger (>={GOOGLE_MIN_EMP} emp) unresolved "
+        f"companies (~$0.20 each, tier cap ${GOOGLE_TIER_CAP:.0f}); budget ${budget.spent():.2f}")
+    blk = threading.Lock()
+    st = {"filled": 0, "done": 0, "stop": False}
+
+    def work(item):
+        idx, name = item
+        with blk:
+            if (st["stop"] or budget.remaining() < worst
+                    or budget.spent() - tier_start >= GOOGLE_TIER_CAP):
+                st["stop"] = True
+                return
+        try:
+            jobs, raw, found = google_jobs.fetch_company(name, since, row=rows[idx])
+        except Exception as e:
+            with blk:
+                st["done"] += 1
+            log(f"GOOGLE-FAIL {name[:30]}: {str(e)[:80]}")
+            return
+        frontline = filter_roles(jobs)
+        with blk:
+            st["done"] += 1
+            if jobs:
+                res = results[idx]
+                res["frontline_role_count"] = len(frontline)
+                res["frontline_20plus"] = _twentyplus(len(frontline))
+                res["frontline_roles"] = ROLE_SEP.join(
+                    f"{j['title']} — {j['location']}".rstrip(" —") for j in frontline)
+                if not res.get("ats_platform"):
+                    res["ats_platform"] = "google"
+                res["status"] = "ok"
+                res["count_method"] = "google"
+                if frontline:
+                    st["filled"] += 1
+            done = st["done"]
+        _emit(type="progress", phase="Google Jobs lookup", current=done, total=n,
+              message=f"{name[:40]}")
+        if checkpoint and done % 20 == 0:
+            checkpoint()
+
+    with ThreadPoolExecutor(max_workers=6) as ex:  # lower concurrency — pricey tier
+        list(ex.map(work, targets))
+    if st["stop"]:
+        log("GOOGLE      stopped early — tier/budget cap reached")
+    log(f"GOOGLE      filled {st['filled']} companies "
+        f"(${budget.spent() - tier_start:.2f} this tier, ${budget.spent():.2f} total)")
+
+
+def run_google_only(input_path, output_path, since="7"):
+    """Resume ONLY the targeted Google Jobs tier on larger unresolved companies."""
+    _run_only(input_path, output_path, since, _google_fill, "GOOGLE-ONLY")
 
 
 def _run_only(input_path, output_path, since, fill_fn, tag):
@@ -905,6 +998,9 @@ def main():
     ap.add_argument("--harvest-only", action="store_true",
                     help="run ONLY the #4 slug-harvest: read the real ATS (free) for "
                          "low-count Indeed companies and cache slugs for future runs")
+    ap.add_argument("--google-only", action="store_true",
+                    help="run ONLY the targeted Google Jobs tier (PAID ~$0.02/job) on "
+                         "larger still-unresolved companies")
     args = ap.parse_args()
     config.FRONTLINE_THRESHOLD = args.threshold
 
@@ -915,7 +1011,9 @@ def main():
         else:
             output = args.input + ".enriched.csv"
 
-    if args.harvest_only:
+    if args.google_only:
+        run_google_only(args.input, output, since=args.since)
+    elif args.harvest_only:
         run_harvest_only(args.input, output, since=args.since)
     elif args.linkedin_only:
         run_linkedin_only(args.input, output, since=args.since)
