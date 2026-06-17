@@ -60,7 +60,7 @@ spends past your cap without you deciding). The page shows your spend live.
 | **Indeed sweep** | ~$0.0001/job | Finds companies by name (+ LinkedIn vanity name) — highest yield |
 | **ATS slug harvest** | pennies | Reads a company's real ATS for free (via Indeed) + caches it |
 | **LinkedIn sweep** | ~$0.0009/job | Recovers companies Indeed couldn't find |
-| **Google Jobs** | ~$0.02/job | Broadest coverage; **targeted at larger companies only** (employer-filtered) |
+| Google Jobs *(CLI `--google-only` only)* | ~$0.02/job | Broadest coverage; **targeted at larger companies only** (employer-filtered) |
 | Apify ATS actors | most expensive | Only for locked platforms (Paycom/Dayforce/ADP/iCIMS) |
 
 Tiers run cheapest-first, each shrinking the work for the next. A typical
@@ -76,6 +76,7 @@ python app.py                                   # the web UI
 # or headless, full cheap pipeline:
 python pipeline.py input.csv output.csv --since 7 --threshold 20 --indeed --harvest --linkedin
 python pipeline.py input.csv output.csv --apify-only     # resume just the paid Apify tier
+python pipeline.py input.csv output.csv --headless-only  # resume just the FREE headless tier
 ```
 
 ## The 20+ threshold (only the signal matters)
@@ -168,21 +169,33 @@ see what the free/cheap tiers couldn't crack:
    and prior verified resolutions, re-verified but reused. **Free.**
 2. **Static fetch + signatures** — homepage + careers paths **+ careers pages
    discovered from `sitemap.xml`** (catches non-standard paths like `/employment`),
-   follow redirects, scan HTML for ATS signatures. **Free.**
+   follow redirects, scan HTML for ATS signatures; a WAF block (403/406/429/503)
+   is retried through the free `r.jina.ai` reader proxy. **Free.**
 3. **Indeed sweep** (`--indeed`) — finds companies by name (and by the **LinkedIn
    vanity name** from the Apollo `Company LinkedIn URL`) on Indeed (~$0.0001/job).
    Highest yield; resolves the bulk.
 4. **Slug harvest** (`--harvest`) — reads a company's real ATS for **free** using
    the apply URL Indeed exposes, and caches the slug so future runs skip the paid
    step entirely. Tagged `count_method=<platform>+indeed`.
-5. **Headless render** ([`headless.py`](headless.py), Playwright) — renders JS-only
-   careers pages and re-scans with the same signatures. **Free** (local compute).
+5. **Headless render** ([`headless.py`](headless.py), Playwright) — renders the
+   careers pages (homepage + `careers.<host>` + `/careers`, `/apply`, `/jobs`) and
+   re-scans with the same signatures to recover a JS-injected ATS. When no fetchable
+   ATS appears, it also harvests open roles straight from the rendered DOM — job
+   anchors, `<option>` role dropdowns, and embedded hourly boards (Workstream /
+   Fountain / Paycor / on-domain ADP), all matcher-gated. A page that renders with no
+   readable roles is recorded as `checked_no_roles` (a resolved 0, never a silent
+   miss). **Free** (local compute). Each chunk runs in an isolated worker subprocess
+   with a hard timeout and per-company JSONL salvage, so a hung or OOM-killed browser
+   degrades that chunk instead of stalling the run; it checkpoints after every chunk,
+   so it is fully resumable. Tune with `HEADLESS_PARALLEL` / `HEADLESS_CHUNK` /
+   `HEADLESS_RENDER_CONCURRENCY`; resume just this tier with `--headless-only`.
    Disable with `--no-headless`.
 6. **LinkedIn sweep** (`--linkedin`) — recovers companies Indeed missed
    (~$0.0009/job).
-7. **Google Jobs** (`--google`) — broadest coverage (a company's own JobPosting
-   schema, niche boards). Pricey (~$0.02/job) and imprecise, so it's **employer-
-   filtered and runs only on larger companies** (≥100 employees) under a $6 tier cap.
+7. **Google Jobs** (`--google-only` — a CLI-standalone tier, not part of the default
+   run or the web UI) — broadest coverage (a company's own JobPosting schema, niche
+   boards). Pricey (~$0.02/job) and imprecise, so it's **employer-filtered and runs
+   only on larger companies** (≥100 employees) under a $6 tier cap.
 8. **Apify ATS actors** (`--apify`) — dedicated (ADP/iCIMS/Paradox) + catch-all
    (Paycom/Dayforce/…). Most expensive; last resort, opt-in.
 
@@ -190,8 +203,8 @@ Free + cheap tiers resolve the bulk; every discovery is cached/seedable so the
 unresolved set shrinks permanently. Spend is hard-capped per run ($15 default)
 (see the budget guard in [`budget.py`](budget.py)).
 
-**Detect-only — resolved + slug recorded, but counts need headless/Apify** (never a false zero):
-Dayforce, SAP SuccessFactors, Paycom, ADP, BrassRing (sjobs), Avature, Hirebridge, Harri, Paradox/Olivia, TalentReef, Workstream.
+**Detect-only — resolved + slug recorded, but counts need the headless DOM pass or Apify** (never a false zero):
+Dayforce, SAP SuccessFactors, Paycom, ADP, BrassRing (sjobs), Avature, Hirebridge, Paradox/Olivia, TalentReef, Workstream, Jobvite, HigherMe, Radancy, ClearCompany, Fountain, Paycor. Workstream, Fountain, Paycor, and on-domain ADP embed their job anchors on the careers page, so the **free headless DOM pass reads them directly**; the rest (off-domain ADP/Paycom/Dayforce SPAs) still need an Apify actor.
 
 **Skipped (defunct/ambiguous):** PeopleMatter (folded into Snagajob ~2016), RapidHire.
 
@@ -248,6 +261,7 @@ confidence when tiering:
 | `apify-aggregator` | catch-all aggregator | medium (may undercount) |
 | `google` | Google Jobs, employer-filtered (larger companies only) | medium |
 | `generic` | job links scraped from a custom (non-ATS) rendered careers page | medium (links+JSON-LD only; no false zeros) |
+| `checked_no_roles` | careers page (incl. an embedded hourly board) rendered, but no readable frontline roles found — a resolved 0, audited (never a silent miss) | medium |
 | *(empty)* | unresolved — count is empty, never 0 | — |
 
 ## Status vs. the SPEC phases

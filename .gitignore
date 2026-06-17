@@ -33,4 +33,15 @@ cache/
 
 # stray temp files from atomic writes / headless workers
 tmp*.json
+tmp*.json.out
+*.out.jsonl
 *.tmp
+*.pids
+# local agent config
+.claude/
+# recovery / bulk-run data + scratch (kept local, never shipped)
+apollo_unresolved_recovery*.csv
+combined_all_results*.csv
+paid_base*.txt
+unresolved_sample.json
+recovery_supervisor.ps1

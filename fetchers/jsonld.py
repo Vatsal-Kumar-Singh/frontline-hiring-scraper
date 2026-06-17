@@ -76,7 +76,9 @@ def extract(html: str) -> list[dict]:
             title = strip_html(str(obj.get("title", ""))).strip()
             if not title:
                 continue
-            key = (title.lower(), obj.get("url") or obj.get("identifier") or "")
+            # url/identifier are sometimes a dict (e.g. {"@type":"PropertyValue",
+            # "value":...}) — coerce to str so the dedup key stays hashable.
+            key = (title.lower(), str(obj.get("url") or obj.get("identifier") or ""))
             if key in seen:
                 continue
             seen.add(key)

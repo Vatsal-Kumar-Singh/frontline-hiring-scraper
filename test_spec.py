@@ -1,8 +1,7 @@
 """Spec-compliance verification (CLAUDE.md hard rules + SPEC sections)."""
-import csv, json, io
+import csv, json
 from pathlib import Path
 
-import matcher
 from fetchers.base import flatten_location
 from fetchers import workday, smartrecruiters
 from matcher import is_frontline, filter_roles

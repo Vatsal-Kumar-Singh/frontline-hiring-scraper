@@ -19,7 +19,7 @@ from fetchers.base import USER_AGENT
 CONCURRENCY = 6
 TIMEOUT_MS = 15000
 SETTLE_MS = 800           # let JS inject the careers/ATS markup after DOM load
-PER_PAGE_HARD_S = 35      # hard cap per page — abandon a hung/crashed render
+PER_PAGE_HARD_S = 20      # hard cap per page — abandon a hung/crashed render
 CHUNK_HARD_S = 240        # internal cap per chunk (the worker subprocess has an
                           # outer hard kill-timeout as the real guarantee)
 
@@ -125,8 +125,13 @@ async def _render_all(tasks, concurrency, timeout_ms, interact, on_page=None):
 
         async def work(key, url):
             async with sem:
-                page = await ctx.new_page()
+                page = None
                 try:
+                    # new_page() can raise TargetClosedError if the browser/context
+                    # died (OOM, crash). Keep it INSIDE the try so a dead browser
+                    # degrades this chunk to partial results instead of crashing the
+                    # whole worker (which would write NO output and lose everything).
+                    page = await ctx.new_page()
                     async def _do():
                         await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
                         await page.wait_for_timeout(SETTLE_MS)
@@ -139,10 +144,11 @@ async def _render_all(tasks, concurrency, timeout_ms, interact, on_page=None):
                 except Exception:
                     pass
                 finally:
-                    try:
-                        await asyncio.wait_for(page.close(), timeout=5)
-                    except Exception:
-                        pass
+                    if page is not None:
+                        try:
+                            await asyncio.wait_for(page.close(), timeout=5)
+                        except Exception:
+                            pass
                     if on_page:
                         try:
                             on_page(key, url)
@@ -150,10 +156,14 @@ async def _render_all(tasks, concurrency, timeout_ms, interact, on_page=None):
                             pass
 
         # HARD per-chunk cap as a final backstop against any remaining hang.
+        # return_exceptions=True + a broad except guarantee render_many NEVER
+        # raises: whatever rendered is returned (partial), the worker writes it,
+        # and a force-kill/crash can no longer wipe the whole chunk.
         try:
             await asyncio.wait_for(
-                asyncio.gather(*(work(k, u) for k, u in tasks)), timeout=CHUNK_HARD_S)
-        except asyncio.TimeoutError:
+                asyncio.gather(*(work(k, u) for k, u in tasks),
+                               return_exceptions=True), timeout=CHUNK_HARD_S)
+        except Exception:
             pass
         try:
             await asyncio.wait_for(browser.close(), timeout=10)

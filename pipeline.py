@@ -525,7 +525,8 @@ def run_harvest_only(input_path, output_path, since="7"):
 
 
 GOOGLE_MIN_EMP = 100   # only worth $0.02/job on larger companies
-GOOGLE_TIER_CAP = 6.0  # hard ceiling for this (pricey) tier, on top of the run cap
+# hard ceiling for this (pricey) tier, on top of the run cap; overridable per-run
+GOOGLE_TIER_CAP = float(os.environ.get("GOOGLE_TIER_CAP_USD", "6.0"))
 
 
 def _google_fill(rows, results, cols, log, since="7", checkpoint=None):
@@ -709,6 +710,33 @@ def run_apify_only(input_path, output_path, since="7"):
     _emit(type="done", counts=counts, strong=strong, total=len(rows), output=output_path)
 
 
+def run_headless_only(input_path, output_path, since="7"):
+    """Resume the FREE headless render tier ONLY on an existing enriched output —
+    skip the (already-done, deterministic) static re-scan and run the headless
+    recovery directly on every still-unresolved company. Checkpoints after each
+    chunk; fully resumable. Zero API cost."""
+    rows, cols, out_fields, results, log = _load_resume(input_path, output_path)
+    cache = load_cache()
+    n_ok = sum(1 for r in results if r.get("status") == "ok")
+    log(f"HEADLESS-ONLY loaded {len(results)} rows ({n_ok} already resolved); "
+        f"rendering the {len(results) - n_ok} still-unresolved")
+
+    def checkpoint():
+        _write_output(rows, results, out_fields, output_path)
+
+    _headless_fill(rows, results, cols, cache, log, checkpoint)
+    save_cache(cache)
+    _write_output(rows, results, out_fields, output_path)
+
+    counts = {}
+    for result in results:
+        counts[result["status"]] = counts.get(result["status"], 0) + 1
+    summary = " ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+    strong = sum(1 for r in results if r.get("frontline_20plus") == "yes")
+    print(f"\nDone (headless-only). {summary} | strong(20+)={strong}  ->  {output_path}")
+    _emit(type="done", counts=counts, strong=strong, total=len(rows), output=output_path)
+
+
 def _write_output(rows, results, out_fields, output_path):
     """Atomically write rows+results to output_path (write tmp, then replace)."""
     tmp = str(output_path) + ".tmp"
@@ -724,14 +752,24 @@ def _write_output(rows, results, out_fields, output_path):
     os.replace(tmp, output_path)
 
 
-HEADLESS_CHUNK = 30           # companies per isolated worker subprocess
+HEADLESS_CHUNK = int(os.environ.get("HEADLESS_CHUNK", "30"))  # companies per worker subprocess
 HEADLESS_CHUNK_TIMEOUT = 300  # hard wall-clock per chunk; a hung worker is killed
+# NOTE: keep HEADLESS_CHUNK small enough that a chunk's renders finish well within
+# HEADLESS_CHUNK_TIMEOUT — a force-killed worker writes NO output, losing the whole
+# chunk. ~10 companies fits comfortably; 30 routinely timed out and dropped everyone.
+# Number of chunk worker subprocesses to run CONCURRENTLY. Chunks mostly wait on
+# slow/hanging sites (each capped at the timeout above), so running several at once
+# multiplies throughput ~linearly. Each worker renders with its own concurrency, so
+# raise this only as far as the machine's RAM/CPU allows. Env-tunable.
+HEADLESS_PARALLEL = int(os.environ.get("HEADLESS_PARALLEL", "3"))
 
 
-def headless_resolve_companies(websites, cache):
+def headless_resolve_companies(websites, cache, on_result=None):
     """Render the given companies (headless) and return {website: result-dict} for
     those that RESOLVE (ATS found, or custom-page generic jobs with >=1 frontline).
-    Runs INSIDE the isolated worker subprocess (headless_worker.py)."""
+    Runs INSIDE the isolated worker subprocess (headless_worker.py).
+    on_result(site, result) fires per resolved company so the worker can persist it
+    immediately (crash-safe incremental output)."""
     out = {}
     resolved = resolve_headless_batch(websites, cache)
     for site, res in resolved.items():
@@ -744,9 +782,16 @@ def headless_resolve_companies(websites, cache):
             platform, method, slug = res["platform"], "headless", res.get("slug", "")
         elif res.get("generic_jobs"):                 # Option B: custom page links
             frontline = filter_roles(res["generic_jobs"])
-            if not frontline:
-                continue
-            platform, method, slug = "custom", "generic", ""
+            platform, slug = "custom", ""
+            # Rendered + parsed job-like content but none frontline -> a genuine
+            # "checked, no frontline roles" (auditable, not a SILENT zero).
+            method = "generic" if frontline else "checked_no_roles"
+        elif res.get("rendered") and res.get("reason") == "no_ats_signature":
+            # We rendered the careers page(s) and found no ATS and no job-like
+            # content: a true "checked, no open roles" — resolved-0, not a miss.
+            # Distinctly tagged so it's never confused with a real 0 or a skip.
+            frontline = []
+            platform, method, slug = "custom", "checked_no_roles", ""
         else:
             continue
         out[site] = {
@@ -757,6 +802,11 @@ def headless_resolve_companies(websites, cache):
             "ats_platform": platform, "ats_slug": slug,
             "ats_url": res.get("ats_url", ""), "status": "ok", "count_method": method,
         }
+        if on_result:
+            try:
+                on_result(site, out[site])
+            except Exception:
+                pass
     return out
 
 
@@ -800,53 +850,100 @@ def _headless_fill(rows, results, cols, cache, log, checkpoint=None):
     sites = list(idx_by_site)
     nsites = len(sites)
     nchunks = (nsites + HEADLESS_CHUNK - 1) // HEADLESS_CHUNK
+    parallel = max(1, min(HEADLESS_PARALLEL, nchunks))
     log(f"HEADLESS    {nsites} companies in {nchunks} isolated chunks of "
-        f"{HEADLESS_CHUNK} (a chunk is killed if it hangs > {HEADLESS_CHUNK_TIMEOUT}s)")
+        f"{HEADLESS_CHUNK}, {parallel} running concurrently "
+        f"(a chunk is killed if it hangs > {HEADLESS_CHUNK_TIMEOUT}s)")
     _emit(type="phase", phase="Headless render",
           detail="rendering JS/custom pages in crash-proof worker subprocesses",
           current=0, total=nsites)
 
     worker = os.path.join(_ROOT, "headless_worker.py")
-    filled = 0
-    for ci in range(nchunks):
-        chunk = sites[ci * HEADLESS_CHUNK:(ci + 1) * HEADLESS_CHUNK]
-        in_fd, in_path = tempfile.mkstemp(suffix=".json", dir=_ROOT)
-        out_path = in_path + ".out"
-        with os.fdopen(in_fd, "w", encoding="utf-8") as f:
-            json.dump({"websites": chunk, "threshold": config.FRONTLINE_THRESHOLD,
-                       "output": out_path}, f)
-        # start_new_session (POSIX): put the worker + its Chromium children in a
-        # fresh process group so _kill_tree can kill them all together.
-        proc = subprocess.Popen([sys.executable, "-u", worker, in_path], cwd=_ROOT,
-                                start_new_session=(os.name != "nt"))
+    lock = threading.Lock()
+    state = {"filled": 0, "done": 0}
+
+    def run_chunk(ci):
+        # Wrap the WHOLE body: a transient failure (mkstemp/Popen/disk) must never
+        # escape into ThreadPoolExecutor.map and abort every remaining chunk.
         try:
-            proc.wait(timeout=HEADLESS_CHUNK_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            _kill_tree(proc)
-            log(f"HEADLESS    chunk {ci+1}/{nchunks} hung -> force-killed, moving on")
-        resolved = {}
-        try:
-            if os.path.exists(out_path):
-                with open(out_path, encoding="utf-8") as f:
-                    resolved = json.load(f)
-        except (OSError, ValueError):
-            resolved = {}
-        for p in (in_path, out_path):
+            chunk = sites[ci * HEADLESS_CHUNK:(ci + 1) * HEADLESS_CHUNK]
+            in_fd, in_path = tempfile.mkstemp(suffix=".json", dir=_ROOT)
+            out_path = in_path + ".out"
+            with os.fdopen(in_fd, "w", encoding="utf-8") as f:
+                json.dump({"websites": chunk, "threshold": config.FRONTLINE_THRESHOLD,
+                           "output": out_path}, f)
+            # start_new_session (POSIX): put the worker + its Chromium children in a
+            # fresh process group so _kill_tree can kill them all together.
+            proc = subprocess.Popen([sys.executable, "-u", worker, in_path], cwd=_ROOT,
+                                    start_new_session=(os.name != "nt"))
             try:
-                os.remove(p)
-            except OSError:
-                pass
-        for site, r in resolved.items():
-            for idx in idx_by_site.get(site, []):
-                results[idx] = r
-                filled += 1
-        _emit(type="progress", phase="Headless render",
-              current=min((ci + 1) * HEADLESS_CHUNK, nsites), total=nsites,
-              message=f"chunk {ci+1}/{nchunks} done ({filled} resolved)")
-        log(f"HEADLESS    chunk {ci+1}/{nchunks} done — {filled} resolved so far")
-        if checkpoint:
-            checkpoint()  # persist after every chunk
-    log(f"HEADLESS    resolved {filled} previously-unresolved companies (free)")
+                proc.wait(timeout=HEADLESS_CHUNK_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                _kill_tree(proc)
+                log(f"HEADLESS    a chunk hung -> force-killed, salvaging partial")
+            resolved = {}
+            # Prefer the consolidated .out; fall back to the per-company JSONL so a
+            # force-killed/OOM-killed worker still yields whatever it finished.
+            try:
+                if os.path.exists(out_path):
+                    with open(out_path, encoding="utf-8") as f:
+                        resolved = json.load(f)
+            except (OSError, ValueError):
+                resolved = {}
+            jsonl_path = out_path + ".jsonl"
+            if not resolved and os.path.exists(jsonl_path):
+                try:
+                    with open(jsonl_path, encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                resolved.update(json.loads(line))
+                            except ValueError:
+                                pass  # ignore a half-written tail line from a kill
+                except OSError:
+                    pass
+            for p in (in_path, out_path, jsonl_path):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            # Merge + checkpoint under one lock. Chunks own DISJOINT result indices, but
+            # the lock keeps the counter and the whole-file checkpoint write consistent.
+            with lock:
+                for site, r in resolved.items():
+                    for idx in idx_by_site.get(site, []):
+                        # Never regress a row already resolved (ok) by a prior phase or
+                        # round — guards against stale .jsonl salvage re-merging.
+                        if results[idx].get("status") == "ok":
+                            continue
+                        # Don't let a "checked, no roles" headless verdict bury a row whose
+                        # ATS we DID detect but can only read off-domain via Apify (ADP/
+                        # Dayforce/Paycor/etc.). The free DOM read only sees on-domain
+                        # embeds (e.g. Workstream/ADP rendered on careers.<host>); when it
+                        # finds nothing for a locked platform, that's not a true zero —
+                        # leave the row unresolved so the paid tier can read it.
+                        if (r.get("count_method") == "checked_no_roles"
+                                and results[idx].get("ats_platform") in fetchers.LOCKED_DOWN):
+                            continue
+                        results[idx] = r
+                        state["filled"] += 1
+                state["done"] += 1
+                done, filled = state["done"], state["filled"]
+                _emit(type="progress", phase="Headless render",
+                      current=min(done * HEADLESS_CHUNK, nsites), total=nsites,
+                      message=f"chunk {done}/{nchunks} done ({filled} resolved)")
+                log(f"HEADLESS    chunk {done}/{nchunks} done — {filled} resolved so far")
+                if checkpoint:
+                    checkpoint()  # persist after every chunk
+        except Exception as e:
+            log(f"HEADLESS    chunk {ci} run_chunk error: {e!r} (skipped)")
+
+    with ThreadPoolExecutor(max_workers=parallel) as ex:
+        for _ in ex.map(run_chunk, range(nchunks)):
+            pass
+    log(f"HEADLESS    resolved {state['filled']} previously-unresolved companies (free)")
 
 
 def _apify_fill(rows, results, cols, log, since="7"):
@@ -1001,6 +1098,9 @@ def main():
     ap.add_argument("--google-only", action="store_true",
                     help="run ONLY the targeted Google Jobs tier (PAID ~$0.02/job) on "
                          "larger still-unresolved companies")
+    ap.add_argument("--headless-only", action="store_true",
+                    help="run ONLY the FREE headless render tier on still-unresolved "
+                         "companies in an existing enriched output (skips static re-scan)")
     args = ap.parse_args()
     config.FRONTLINE_THRESHOLD = args.threshold
 
@@ -1011,7 +1111,9 @@ def main():
         else:
             output = args.input + ".enriched.csv"
 
-    if args.google_only:
+    if args.headless_only:
+        run_headless_only(args.input, output, since=args.since)
+    elif args.google_only:
         run_google_only(args.input, output, since=args.since)
     elif args.harvest_only:
         run_harvest_only(args.input, output, since=args.since)

@@ -21,7 +21,6 @@ from __future__ import annotations
 from urllib.parse import urlparse
 
 import budget
-import config
 import matcher
 from .base import flatten_location
 from . import apify_base

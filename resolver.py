@@ -10,6 +10,7 @@ AND verified by hitting the platform endpoint.
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -115,6 +116,9 @@ SIGNATURES = [
     ("talentreef", re.compile(r"(?P<s>[a-z0-9\-]+)\.talentreef\.com", re.I), None),
     ("talentreef", re.compile(r"(?:recruiting\.talentreef\.com|jobappnetwork\.com)", re.I), None),
     ("workstream", re.compile(r"(?:app\.)?workstream\.(?:us|io)", re.I), None),
+    ("fountain", re.compile(r"fountain\.com/(?P<s>[a-z0-9\-]+)", re.I), None),
+    ("fountain", re.compile(r"(?:apply|careers|jobs)\.[a-z0-9\-]+\.fountain\.com", re.I), None),
+    ("paycor", re.compile(r"recruiting(?:by)?paycor\.com", re.I), None),
 ]
 
 # Per-platform reserved tokens that are infrastructure paths, not company slugs.
@@ -140,7 +144,8 @@ JOBPOSTING_MARKER = re.compile(r'"@type"\s*:\s*\[?\s*"JobPosting"', re.I)
 # common non-standard paths (/join-team, /work-for-us, ...) the fixed candidate
 # list misses.
 _CAREERS_LINK = re.compile(
-    r"career|join|hiring|opportunit|employ|/jobs|work-with|work-for|work-at",
+    r"career|join|hiring|opportunit|employ|/jobs|/apply|positions?|openings?|"
+    r"vacanc|work-with|work-for|work-at",
     re.I,
 )
 MAX_FETCH = 10  # bound total HTTP fetches per company
@@ -326,9 +331,39 @@ def _reorder(cands: list[tuple[str, str]], hint: str | None) -> list[tuple[str, 
 
 
 # --------------------------------------------------------------- fetch ---------
+# Fuller browser header set — many basic WAFs/Cloudflare pass requests that look
+# like a real browser and 403/406/503 the minimal default headers.
+_BROWSER_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
+              "image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+}
+
+
 def _fetch(url: str, timeout: int = 4):
-    headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
-    return requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+    return requests.get(url, headers=_BROWSER_HEADERS, timeout=timeout,
+                        allow_redirects=True)
+
+
+def _fetch_via_reader(url: str, timeout: int = 8):
+    """Last-resort FREE fallback for WAF-blocked careers pages: fetch through the
+    r.jina.ai reader proxy, which returns clean rendered text the signature scan
+    can still run on. Returns text or None."""
+    try:
+        r = requests.get("https://r.jina.ai/" + url,
+                         headers={"User-Agent": USER_AGENT}, timeout=timeout)
+        if r.status_code < 400 and r.text:
+            return r.text
+    except requests.RequestException:
+        pass
+    return None
 
 
 # -------------------------------------------------------------- resolve --------
@@ -474,6 +509,9 @@ def resolve(website: str, technologies: str | None = None, cache: dict | None = 
             r = _fetch(url)
         except requests.RequestException:
             return None
+        if r.status_code in (403, 406, 429, 503):  # WAF/anti-bot — try reader proxy
+            text = _fetch_via_reader(url)
+            return (text, url) if text else None
         if r.status_code >= 400:
             return None
         return (r.text, str(r.url))
@@ -483,13 +521,16 @@ def resolve(website: str, technologies: str | None = None, cache: dict | None = 
 
 
 # Focused URL set for the (slower) headless tier — homepage + the few highest-hit
-# careers paths, incl. /career (singular).
+# careers locations. The careers.{host} subdomain is where hourly boards
+# (Workstream/Fountain/etc.) commonly embed their server-rendered job anchors,
+# and the homepage often doesn't link to it — so render it directly.
 def headless_candidate_urls(host: str) -> list[str]:
-    # Kept small for speed — homepage footer usually links the ATS, and /careers
-    # /career cover the rest. More pages come from discovered careers links.
     return [
         f"https://{host}",
+        f"https://careers.{host}",
         f"https://{host}/careers",
+        f"https://{host}/apply",
+        f"https://{host}/jobs",
     ]
 
 
@@ -509,40 +550,125 @@ def _headless_targets(website):
                     urls.append(link)
     except requests.RequestException:
         pass
-    return (website, host, urls[:3])  # cap renders per company (homepage + careers + 1 discovered)
+    return (website, host, urls[:6])  # cap renders/company (home + careers. + /careers + /apply + /jobs + 1 discovered)
 
 
 # --- Option B: generic job extraction from a rendered custom careers page ------
-_JOB_HREF = re.compile(
-    r'<a[^>]+href="[^"]*(?:/job|/jobs/|/position|/opening|/vacanc|/apply|/careers/)'
-    r'[^"]*"[^>]*>(.*?)</a>', re.I | re.S)
+# Any <a> tag (attrs, inner-HTML) — we decide per-anchor whether it's a posting.
+_ANCHOR = re.compile(r'<a\b([^>]*)>(.*?)</a>', re.I | re.S)
+# href markers that mean "this anchor points at a job/apply page" — generic ATS
+# paths PLUS the hourly boards we detect-but-don't-fetch (Workstream /j/, Fountain,
+# ADP, Paycom, Paycor). Anchors matching these are postings regardless of text.
+_HREF_JOB = re.compile(
+    r'(?:/job|/jobs/|/position|/opening|/vacanc|/apply|/careers/'
+    r'|workstream\.us/j/|fountain\.com|recruiting\.adp\.com'
+    r'|paycomonline\.net|recruitingbypaycor\.com)', re.I)
+# A 'position'/'role' application dropdown — its <option>s are the open-role list.
+_SELECT_POS = re.compile(
+    r'<select[^>]*(?:name|id)="[^"]*(?:position|role|job|opening)[^"]*"[^>]*>'
+    r'(.*?)</select>', re.I | re.S)
+_OPTION = re.compile(r'<option[^>]*>(.*?)</option>', re.I | re.S)
+_HREF_ATTR = re.compile(r'href="([^"]+)"', re.I)
+# Generic call-to-action button text — NOT a job title. Each ATS job card links
+# with one of these ('Apply now', 'View details'), so the title must come from
+# the URL slug instead, and the COUNT must come from the distinct URLs.
+_CTA_TEXT = re.compile(
+    r"^(apply( now| online| today| here)?|view( job| details| more| opening)?"
+    r"|see( more| details| job)?|details|learn more|read more|more info|join"
+    r"( now| us| the team)?|open(ings?)?|explore|select)\.?$", re.I)
+# Trailing opaque id on a slug segment ('assistant-manager-bed41d47' -> drop the
+# hex; 'st-louis-89640' -> drop the digits) so the slug humanizes to a title.
+_ID_SUFFIX = re.compile(r"[-_][0-9a-f]{6,}$", re.I)
+_NUM_SUFFIX = re.compile(r"[-_]?\d{3,}$")
+# High-precision frontline-title cues. Used so a harvested string (anchor text /
+# dropdown option / job-row) is only kept when it LOOKS like a job title — this
+# guards against brand/nav names (e.g. 'Italian Farmhouse') that would otherwise
+# trip role-stems. The matcher (is_frontline) is the authoritative gate downstream.
+_TITLE_CUE = re.compile(
+    r"\b(cook|chef|server|cashier|barista|bartender|host|hostess|busser|"
+    r"dishwasher|prep|crew|team member|shift|cleaner|janitor|custodian|"
+    r"housekeep|room attendant|front desk|guest service|deli|grill|baker|"
+    r"concession|food runner|food service|cater|banquet|delivery|driver|"
+    r"warehouse|stock|merchandis|sales associate|retail|cna|caregiver|nursing|"
+    r"home health|porter|valet|attendant|laborer|packer|picker|teller|"
+    r"maintenance|security|landscap|laundry|associate|manager|supervisor|"
+    r"technician|assistant|clerk|crew member|front of house|back of house)\b", re.I)
+
+
+def _job_from_url(href: str) -> tuple[str, str]:
+    """Derive (position, location) from a job-detail URL's path. Hourly ATS URLs
+    encode them: workstream .../{company}/{location}/{position}-{id}. Returns the
+    humanized last segment as position and the prior segment as location."""
+    try:
+        segs = [s for s in urlparse(href).path.split("/") if s]
+    except ValueError:
+        return ("", "")
+    if not segs:
+        return ("", "")
+    pos = re.sub(r"[-_]+", " ", _ID_SUFFIX.sub("", segs[-1])).strip()
+    loc = ""
+    if len(segs) >= 2:
+        loc = re.sub(r"[-_]+", " ", _NUM_SUFFIX.sub("", segs[-2])).strip()
+        if loc.lower() in ("j", "jobs", "job", "careers", "career", "apply"):
+            loc = ""  # infrastructure segment, not a location
+    return (pos.title(), loc.title())
 
 
 def extract_generic_jobs(html: str) -> list[dict]:
     """Best-effort job extraction from an arbitrary rendered careers page (no
-    known ATS): schema.org JobPosting + job-detail links ONLY. We deliberately do
-    NOT harvest bare headings — restaurant/brand names (e.g. 'Italian Farmhouse',
-    'Town Docks') trip role-stems (farm/dock) and create false positives. Links
-    pointing at a job/apply URL are real postings; the matcher gates them too.
-    De-duped by title."""
+    known ATS). Sources, all gated by the matcher downstream:
+      - schema.org JobPosting blocks (highest trust);
+      - anchors that POINT at a job/apply URL (incl. Workstream/Fountain/ADP/
+        Paycom/Paycor boards we detect but can't HTTP-fetch) — de-duped by URL,
+        with the title taken from the anchor text or, when that is a generic CTA
+        ('Apply now'), derived from the URL slug;
+      - anchors whose VISIBLE TEXT looks like a frontline title (catches custom
+        list pages whose links don't use a /job href, e.g. WingStand /apply);
+      - <option>s of a 'position'/'role' application dropdown.
+    We still avoid bare headings — brand names (e.g. 'Italian Farmhouse') trip
+    role-stems — by requiring a job href OR a title-cue match."""
     html = (html or "")[:TEXT_CAP]  # bound regex/JSON-LD parse (GIL-safe)
     out: list[dict] = []
     seen: set[str] = set()
 
-    def add(title, location=""):
-        t = (title or "").strip()
-        if 3 <= len(t) <= 90 and t.lower() not in seen:
-            seen.add(t.lower())
-            out.append({"title": t, "location": location})
+    def add(title, location="", key=None):
+        t = strip_html(title or "").strip()
+        if not (3 <= len(t) <= 90):
+            return
+        k = (key or t).lower()
+        if k in seen:
+            return
+        seen.add(k)
+        # 'src' is the per-job dedup key (job URL when available) — distinct stores
+        # share a (title, city) but have distinct URLs, so carry it so the
+        # cross-page merge counts them separately instead of collapsing by city.
+        out.append({"title": t, "location": location, "src": k})
 
     for j in jsonld.extract(html):       # structured JobPosting blocks (highest trust)
         add(j.get("title", ""), j.get("location", ""))
-    for m in _JOB_HREF.finditer(html):   # anchors pointing at a job/apply URL
-        add(strip_html(m.group(1)))
+    for m in _ANCHOR.finditer(html):     # postings: job-href anchors OR title-like text
+        attrs, inner = m.group(1), m.group(2)
+        text = strip_html(inner)
+        if _HREF_JOB.search(attrs):
+            href_m = _HREF_ATTR.search(attrs)
+            href = href_m.group(1) if href_m else ""
+            url_key = (href.split("?", 1)[0] or text).lower()  # one job per URL
+            if text and not _CTA_TEXT.match(text):
+                add(text, key=url_key)   # anchor text IS the title
+            else:                        # generic CTA — title from the URL slug
+                pos, loc = _job_from_url(href)
+                add(pos, loc, key=url_key)
+        elif _TITLE_CUE.search(text):    # custom list link whose text is a title
+            add(text)
+    for sel in _SELECT_POS.finditer(html):   # 'position' dropdown options as roles
+        for opt in _OPTION.finditer(sel.group(1)):
+            t = strip_html(opt.group(1))
+            if _TITLE_CUE.search(t):
+                add(t)
     return out
 
 
-def resolve_headless_batch(websites, cache: dict, concurrency: int = 10, on_page=None) -> dict:
+def resolve_headless_batch(websites, cache: dict, concurrency: int | None = None, on_page=None) -> dict:
     """FREE JS-rendering fallback: render each unresolved company's careers pages
     (standard paths + statically-discovered careers links) with a headless
     browser, re-scan with the same signatures, verify, cache. Returns
@@ -550,6 +676,9 @@ def resolve_headless_batch(websites, cache: dict, concurrency: int = 10, on_page
     No-op (all unresolved) if Playwright isn't installed."""
     import headless
     from concurrent.futures import ThreadPoolExecutor
+
+    if concurrency is None:  # per-worker render fan-out; lower via env to cut RAM
+        concurrency = int(os.environ.get("HEADLESS_RENDER_CONCURRENCY", "10"))
 
     hosts = {}
     tasks = []
@@ -564,9 +693,12 @@ def resolve_headless_batch(websites, cache: dict, concurrency: int = 10, on_page
 
     rendered = headless.render_many(tasks, concurrency=concurrency, on_page=on_page)
 
+    import gc
     results = {}
     for w, host in hosts.items():
-        pages = rendered.get(host, [])
+        # pop (not get): drop each company's HTML from the big dict as we go so
+        # peak RAM falls across the chunk instead of holding all pages at once.
+        pages = rendered.pop(host, [])
         all_candidates: list[tuple[str, str, str]] = []
         seen = set()
         for final_url, html in pages:
@@ -576,12 +708,28 @@ def resolve_headless_batch(websites, cache: dict, concurrency: int = 10, on_page
                     seen.add(ckey)
                     all_candidates.append(cand)
         res = _finalize(host, all_candidates, bool(pages), None, cache)
+        res["rendered"] = bool(pages)  # we actually fetched+rendered ≥1 page
         # Option B: if no fetchable ATS resolved, harvest generic job candidates
-        # from the rendered HTML (the matcher gates these downstream).
+        # from the rendered HTML (the matcher gates these downstream). Extract
+        # PER PAGE so each page gets its own TEXT_CAP budget — a huge homepage
+        # must not truncate the careers page's job anchors out of a concat.
         if res["status"] != "ok" and pages:
-            combined = "\n".join(html for _, html in pages)
-            generic = extract_generic_jobs(combined)
+            generic, seen_t = [], set()
+            for _, html in pages:
+                try:
+                    jobs = extract_generic_jobs(html)
+                except MemoryError:
+                    raise  # never mask an OOM as a benign bad page — let it surface
+                except Exception:
+                    jobs = []  # a single malformed page must never kill the chunk
+                for j in jobs:
+                    k = j.get("src") or (j["title"].lower(), j["location"].lower())
+                    if k not in seen_t:
+                        seen_t.add(k)
+                        generic.append(j)
             if generic:
                 res["generic_jobs"] = generic
         results[w] = res
+        pages = None  # release this company's HTML before moving to the next
+        gc.collect()
     return results
